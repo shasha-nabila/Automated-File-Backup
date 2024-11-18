@@ -8,6 +8,7 @@ from typing import Optional
 import pyodbc
 import json
 import time
+from azure.functions.decorators.core import DataType
 
 app = func.FunctionApp()
 
@@ -85,93 +86,59 @@ def sensor_trigger(req: func.HttpRequest) -> func.HttpResponse:
         )
 
 @app.function_name(name="ProcessSensorData")
-@app.sql_trigger(arg_name="req",
-                connection_string_setting="SQLConnectionString",
-                command_text="[dbo].[SensorData]",
-                command_type="Table",
-                leasing_scheme="Hash")
-def process_sensor_data(req: func.SqlTrigger) -> str:
-    start_time = time.time()
-    
+@app.sql_trigger(arg_name="sensor_data",
+                 table_name="SensorData",
+                 connection_string_setting="SqlConnectionString")
+def process_sensor_data(sensor_data: str) -> None:
     try:
-        conn_str = get_db_connection_string()
-        if not conn_str:
-            return "Error: Could not get database connection string"
+        # Log incoming changes
+        logging.info("Processing sensor data changes: %s", json.loads(sensor_data))
+        
+        # Get database connection from settings
+        conn_str = app.settings["SqlConnectionString"]
+        conn = pyodbc.connect(conn_str)
+        cursor = conn.cursor()
 
-        with pyodbc.connect(conn_str) as conn:
-            cursor = conn.cursor()
-            
-            # Create StatisticsLog table if it doesn't exist
-            cursor.execute("""
-                IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'StatisticsLog')
-                CREATE TABLE StatisticsLog (
-                    ID INT IDENTITY(1,1) PRIMARY KEY,
-                    Timestamp DATETIME,
-                    MaxTemp FLOAT,
-                    MinTemp FLOAT,
-                    AvgTemp FLOAT,
-                    MaxHumidity FLOAT,
-                    MinHumidity FLOAT,
-                    AvgHumidity FLOAT,
-                    ExecutionTime FLOAT
-                )
-            """)
-            
-            # Calculate statistics
-            cursor.execute("""
-                SELECT 
-                    MAX(Temperature) as MaxTemp,
-                    MIN(Temperature) as MinTemp,
-                    AVG(Temperature) as AvgTemp,
-                    MAX(Humidity) as MaxHumidity,
-                    MIN(Humidity) as MinHumidity,
-                    AVG(Humidity) as AvgHumidity
-                FROM SensorData
-            """)
-            
-            stats = cursor.fetchone()
-            execution_time = time.time() - start_time
-            
-            # Log statistics
-            cursor.execute("""
-                INSERT INTO StatisticsLog 
-                (Timestamp, MaxTemp, MinTemp, AvgTemp, MaxHumidity, MinHumidity, AvgHumidity, ExecutionTime)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                datetime.utcnow(),
-                stats.MaxTemp,
-                stats.MinTemp,
-                stats.AvgTemp,
-                stats.MaxHumidity,
-                stats.MinHumidity,
-                stats.AvgHumidity,
-                execution_time
-            ))
-            
-            conn.commit()
-            
-            return json.dumps({
-                "status": "success",
-                "message": "Statistics calculated and logged successfully",
-                "statistics": {
-                    "temperature": {
-                        "max": stats.MaxTemp,
-                        "min": stats.MinTemp,
-                        "avg": stats.AvgTemp
-                    },
-                    "humidity": {
-                        "max": stats.MaxHumidity,
-                        "min": stats.MinHumidity,
-                        "avg": stats.AvgHumidity
-                    },
-                    "execution_time": execution_time
-                }
-            })
-            
+        # Create statistics table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS SensorStatistics (
+                ID INT IDENTITY(1,1) PRIMARY KEY,
+                Timestamp DATETIME,
+                MaxTemp FLOAT,
+                MinTemp FLOAT,
+                AvgTemp FLOAT,
+                MaxHumidity FLOAT,
+                MinHumidity FLOAT,
+                AvgHumidity FLOAT,
+                ExecutionTime FLOAT
+            )
+        """)
+
+        # Calculate statistics
+        cursor.execute("""
+            SELECT 
+                MAX(Temperature) as MaxTemp,
+                MIN(Temperature) as MinTemp,
+                AVG(Temperature) as AvgTemp,
+                MAX(Humidity) as MaxHumidity,
+                MIN(Humidity) as MinHumidity,
+                AVG(Humidity) as AvgHumidity
+            FROM SensorData
+        """)
+
+        # Store results
+        stats = cursor.fetchone()
+        execution_time = datetime.now()
+        
+        cursor.execute("""
+            INSERT INTO SensorStatistics 
+            (Timestamp, MaxTemp, MinTemp, AvgTemp, MaxHumidity, MinHumidity, AvgHumidity, ExecutionTime)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (execution_time, *stats))
+        
+        conn.commit()
+        logging.info("Statistics calculated and stored successfully")
+
     except Exception as e:
-        error_message = f"Error processing sensor data: {str(e)}"
-        logging.error(error_message)
-        return json.dumps({
-            "status": "error",
-            "message": error_message
-        })
+        logging.error(f"Error processing sensor data: {str(e)}")
+        raise
