@@ -2,7 +2,7 @@
 # More GitHub Actions for Azure: https://github.com/Azure/actions
 # More info on Python, GitHub Actions, and Azure Functions: https://aka.ms/python-webapps-actions
 
-name: Build and deploy Python project to Azure Function App - iot-func-app
+name: Build and deploy Python project to Azure Function App - filearch-funcapp
 
 on:
   push:
@@ -66,15 +66,15 @@ jobs:
       - name: Login to Azure
         uses: azure/login@v2
         with:
-          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_AE651EF6A6ED43B8AFE4EC78655E9369 }}
-          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_B4337AC1867241E0BE8703D68DF27AF8 }}
-          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_3D585B1BBAA9452BB019F6D04840806D }}
+          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_ACD753F545BE448590981A0332B5D200 }}
+          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_DA6419129E49423CB9506F8E8FC6CBF5 }}
+          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_38BACAF370BB49A68B7E4FB0BC1AE2DB }}
 
       - name: 'Deploy to Azure Functions'
         uses: Azure/functions-action@v1
         id: deploy-to-function
         with:
-          app-name: 'iot-func-app'
+          app-name: 'filearch-funcapp'
           slot-name: 'Production'
           package: ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
           
