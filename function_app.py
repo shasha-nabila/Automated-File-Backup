@@ -6,8 +6,6 @@ from azure.storage.blob import BlobServiceClient
 from azure.identity import DefaultAzureCredential
 import mimetypes
 from azure.keyvault.secrets import SecretClient
-import datetime
-import io
 import time
 import gzip
 from datetime import datetime, timezone, timedelta
@@ -43,8 +41,7 @@ def init_blob_service():
     return BlobServiceClient.from_connection_string(storage_conn_str)
 
 def validate_file(file):
-    # Add your validation rules
-    max_size = 10 * 1024 * 1024  # 10MB
+    max_size = 50 * 1024 * 1024  # 50MB
     allowed_types = ['.jpg', '.png', '.pdf', '.docx']
     
     if file.content_length > max_size:
@@ -132,11 +129,9 @@ def process_single_file(blob_service_client, file_name, upload_container, backup
             # Delete original blob
             source_blob.delete_blob()
             
-        logger.info(f"Successfully processed file: {file_name}")
         return True
         
     except Exception as e:
-        logger.error(f"Error processing file {file_name}: {str(e)}")
         return False
 
 @app.blob_trigger(arg_name="myblob", 
@@ -167,16 +162,48 @@ def backup_function(myblob: func.InputStream):
             ): blob.name for blob in blobs
         }
         
+        retention_days = int(os.environ["RETENTION_DAYS"])
+
         for future in as_completed(future_to_file):
             file_name = future_to_file[future]
             try:
+                # Get blob properties to calculate file age
+                blob_client = container_client.get_blob_client(file_name)
+                properties = blob_client.get_blob_properties()
+                last_modified = properties.last_modified
+                
+                # Calculate file age in days
+                file_age = (datetime.now(timezone.utc) - last_modified).days
+                
+                execution_time = time.time() - start_time
+                
+                # Update the metadata dictionary
+                metadata = {
+                    'blob_name': file_name,
+                    'was_archived': file_age > retention_days,
+                    'processing_time': execution_time,
+                    'file_age_days': file_age
+                }
+
+                # Update logging calls
                 success = future.result()
                 if success:
-                    logger.info(f"Completed processing file: {file_name}")
+                    logger.info(
+                        f"Completed processing file: {file_name}",
+                        extra=metadata
+                    )
                 else:
-                    logger.error(f"Failed to process file: {file_name}")
+                    logger.error(
+                        f"Failed to process file: {file_name}",
+                        extra=metadata
+                    )
             except Exception as e:
-                logger.error(f"Exception processing file {file_name}: {str(e)}")
-    
+                logger.error(
+                    f"Error processing {file_name}: {str(e)}",
+                    extra=metadata
+                )
+
     end_time = time.time()
-    logger.info(f"Backup function completed. Total processing time: {end_time - start_time} seconds")
+    logger.info(
+        f"Backup function completed. Total processing time: {end_time - start_time} seconds"
+    )
