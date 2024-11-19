@@ -10,7 +10,8 @@ import datetime
 import io
 import time
 import gzip
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 def get_secrets_from_keyvault():
     vault_url = os.environ["AZURE_KEY_VAULT_URL"]
@@ -94,55 +95,88 @@ async def upload(req: func.HttpRequest) -> func.HttpResponse:
         logger.error(f"Upload failed: {str(e)}")
         return func.HttpResponse(f"Upload failed: {str(e)}", status_code=500)
 
+def process_single_file(blob_service_client, file_name, upload_container, backup_container, archive_container):
+    try:
+        # Copy to backup container
+        source_blob = blob_service_client.get_blob_client(
+            container=upload_container,
+            blob=file_name
+        )
+        
+        backup_blob = blob_service_client.get_blob_client(
+            container=backup_container,
+            blob=file_name
+        )
+        
+        backup_blob.start_copy_from_url(source_blob.url)
+        
+        # Check retention period and archive if needed
+        blob_properties = source_blob.get_blob_properties()
+        creation_time = blob_properties.creation_time
+        retention_days = int(os.environ["RETENTION_DAYS"])
+        
+        if datetime.now(timezone.utc) - creation_time > timedelta(days=retention_days):
+            # Download blob content
+            download_stream = source_blob.download_blob()
+            
+            # Compress content
+            compressed_content = gzip.compress(download_stream.readall())
+            
+            # Upload to archive container
+            archive_blob = blob_service_client.get_blob_client(
+                container=archive_container,
+                blob=f"{file_name}.gz"
+            )
+            archive_blob.upload_blob(compressed_content, overwrite=True)
+            
+            # Delete original blob
+            source_blob.delete_blob()
+            
+        logger.info(f"Successfully processed file: {file_name}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error processing file {file_name}: {str(e)}")
+        return False
+
 @app.blob_trigger(arg_name="myblob", 
                  path="upload-cont/{name}",
                  connection="AzureWebJobsStorage")
-async def process_backup(myblob: func.InputStream):
-    try:
-        start_time = time.time()
-        
-        # Get container names from settings
-        backup_container = os.environ["BACKUP_CONTAINER_NAME"]
-        archive_container = os.environ["ARCHIVE_CONTAINER_NAME"]
-        retention_days = int(os.environ["RETENTION_DAYS"])
-        
-        # Initialize blob service
-        blob_service_client = init_blob_service()
-        
-        # Create backup copy
-        source_blob_name = myblob.name.split('/')[-1]
-        backup_blob_client = blob_service_client.get_container_client(backup_container).get_blob_client(source_blob_name)
-        backup_blob_client.upload_blob(myblob.read(), overwrite=True)
-        
-        # Check file age and archive if needed
-        blob_properties = backup_blob_client.get_blob_properties()
-        current_time = datetime.now(timezone.utc)
-        file_age = (current_time - blob_properties.last_modified).days
-        
-        if file_age > retention_days:
-            # Compress file
-            compressed_data = io.BytesIO()
-            with gzip.GzipFile(fileobj=compressed_data, mode='wb') as gz:
-                gz.write(myblob.read())
-            compressed_data.seek(0)
-            
-            archive_blob_client = blob_service_client.get_container_client(archive_container).get_blob_client(f"{source_blob_name}.gz")
-            archive_blob_client.upload_blob(compressed_data, overwrite=True)
-            
-            # Delete from backup container
-            backup_blob_client.delete_blob()
-        
-        # Log processing details
-        execution_time = time.time() - start_time
-        metadata = {
-            'filename': source_blob_name,
-            'backup_container': backup_container,
-            'was_archived': file_age > retention_days,
-            'processing_time': execution_time,
-            'file_age_days': file_age
+def backup_function(myblob: func.InputStream):
+    start_time = time.time()
+    
+    blob_service_client = init_blob_service()
+    upload_container = os.environ["UPLOAD_CONTAINER_NAME"]
+    backup_container = os.environ["BACKUP_CONTAINER_NAME"]
+    archive_container = os.environ["ARCHIVE_CONTAINER_NAME"]
+    
+    # Get list of files to process
+    container_client = blob_service_client.get_container_client(upload_container)
+    blobs = container_client.list_blobs()
+    
+    # Process files in parallel using ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        future_to_file = {
+            executor.submit(
+                process_single_file,
+                blob_service_client,
+                blob.name,
+                upload_container,
+                backup_container,
+                archive_container
+            ): blob.name for blob in blobs
         }
-        logger.info('Backup processing completed', extra={'custom_dimensions': metadata})
         
-    except Exception as e:
-        logger.error(f"Backup processing failed: {str(e)}")
-        raise
+        for future in as_completed(future_to_file):
+            file_name = future_to_file[future]
+            try:
+                success = future.result()
+                if success:
+                    logger.info(f"Completed processing file: {file_name}")
+                else:
+                    logger.error(f"Failed to process file: {file_name}")
+            except Exception as e:
+                logger.error(f"Exception processing file {file_name}: {str(e)}")
+    
+    end_time = time.time()
+    logger.info(f"Backup function completed. Total processing time: {end_time - start_time} seconds")
