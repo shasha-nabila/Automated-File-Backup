@@ -1,6 +1,6 @@
-# Setup Instructions for Deployed Azure Function Workflow
+# Azure: File Processing and Archival Workflow
 
-Welcome to the setup guide for deploying and using the serverless workflow. Follow the steps below to get everything set up and running smoothly.
+This serverless system automates file upload, backup, and archival using Azure Functions and Blob Storage. The Upload Function validates files (≤50MB, `.jpg`, `.png`, `.pdf`, `.docx`), stores them securely, and logs metadata in Application Insights. The Backup & Archival Function creates redundant copies and archives expired files using gzip compression. ThreadPoolExecutor enables parallel processing for efficiency, while Azure Key Vault secures credentials. Built with an event-driven architecture, the system ensures scalability, automation, and maintainability for dynamic workloads.
 
 ## Prerequisites
 
